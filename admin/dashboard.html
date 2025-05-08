@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Admin Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet">
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    h1, h2 { margin-top: 40px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; font-size: 14px; }
+    th { background-color: #eee; }
+    #map { height: 400px; margin-top: 20px; }
+    input, select, button { margin: 5px; padding: 5px; }
+  </style>
+</head>
+<body>
+  <h1>Admin Dashboard</h1>
+
+  <!-- Filter -->
+  <label>Filter by Name: <input type="text" id="filter-user-id"></label>
+  <button onclick="applyFilter()">Apply Filter</button>
+  <button onclick="exportCSV()">Export CSV</button>
+
+  <!-- Table -->
+  <h2>Attendance</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th><th>Name</th><th>Check In (WIB)</th><th>Check Out (WIB)</th>
+        <th>Latitude In</th><th>Longitude In</th><th>Latitude Out</th><th>Longitude Out</th>
+      </tr>
+    </thead>
+    <tbody id="table-body"></tbody>
+  </table>
+
+  <!-- Map -->
+  <h2>Location Map</h2>
+  <div id="map"></div>
+
+  <script>
+    // Supabase configuration
+    const supabaseUrl = 'https://telxfiwfgambvtokvvem.supabase.co';
+    const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRlbHhmaXdmZ2FtYnZ0b2t2dmVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2NzYwMTUsImV4cCI6MjA2MjI1MjAxNX0._Lrv33QGZk9qt27CqjXAdI7BfPbn5RYtyXxctFLcSUg';
+    
+    // Initialize Supabase client
+    const supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
+    
+    const tableBody = document.getElementById("table-body");
+    let allData = [];
+    let userMap = {}; // Map to store user_id -> full_name
+
+    mapboxgl.accessToken = 'pk.eyJ1IjoiaGtsZnJobnN5aCIsImEiOiJjbWFkajdobTEwZWt6MnBzaXB1ajQ1cnd3In0.SNQYcxrFSahI0aKUhyZIQA';
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/streets-v11',
+      center: [106.8, -6.2], // Default Jakarta
+      zoom: 10
+    });
+
+    function addMarker(lng, lat, label) {
+      new mapboxgl.Marker().setLngLat([lng, lat]).setPopup(new mapboxgl.Popup().setText(label)).addTo(map);
+    }
+
+    // Format date to WIB time
+    function formatToWIB(dateString) {
+      if (!dateString) return '-';
+      const date = new Date(dateString);
+      return date.toLocaleString('id-ID', {
+        timeZone: 'Asia/Jakarta',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }) + ' WIB';
+    }
+
+    async function fetchUsers() {
+      try {
+        const { data, error } = await supabase.from("user_profiles").select("id, full_name");
+        if (error) {
+          console.error("Error fetching users:", error);
+          return;
+        }
+        
+        // Create a map of user_id to full_name
+        data.forEach(user => {
+          userMap[user.id] = user.full_name;
+        });
+      } catch (err) {
+        console.error("Exception when fetching users:", err);
+      }
+    }
+
+    async function fetchData() {
+      try {
+        // First fetch users to get names
+        await fetchUsers();
+        
+        // Then fetch attendance data
+        const { data, error } = await supabase.from("attendance").select("*");
+        if (error) {
+          console.error("Error fetching data:", error);
+          return;
+        }
+        
+        // Enhance data with full names
+        allData = data.map(row => ({
+          ...row,
+          full_name: userMap[row.user_id] || row.user_id // Fallback to user_id if name not found
+        }));
+        
+        renderTable(allData);
+        renderMap(allData);
+      } catch (err) {
+        console.error("Exception when fetching data:", err);
+      }
+    }
+
+    function renderTable(data) {
+      tableBody.innerHTML = "";
+      data.forEach(row => {
+        tableBody.innerHTML += `
+          <tr>
+            <td>${row.id}</td>
+            <td>${row.full_name}</td>
+            <td>${formatToWIB(row.check_in_time)}</td>
+            <td>${formatToWIB(row.check_out_time)}</td>
+            <td>${row.check_in_latitude}</td>
+            <td>${row.check_in_longitude}</td>
+            <td>${row.check_out_latitude || '-'}</td>
+            <td>${row.check_out_longitude || '-'}</td>
+          </tr>`;
+      });
+    }
+
+    function renderMap(data) {
+      // Clear existing markers
+      map.once('idle', function() {
+        const markers = document.getElementsByClassName('mapboxgl-marker');
+        while(markers[0]) {
+          markers[0].parentNode.removeChild(markers[0]);
+        }
+        
+        // Add new markers
+        data.forEach(row => {
+          const name = row.full_name || row.user_id;
+          if (row.check_in_latitude && row.check_in_longitude) {
+            addMarker(row.check_in_longitude, row.check_in_latitude, `Check-in: ${name}`);
+          }
+          if (row.check_out_latitude && row.check_out_longitude) {
+            addMarker(row.check_out_longitude, row.check_out_latitude, `Check-out: ${name}`);
+          }
+        });
+      });
+    }
+
+    function applyFilter() {
+      const searchTerm = document.getElementById("filter-user-id").value.toLowerCase();
+      const filtered = allData.filter(row => 
+        (row.full_name && row.full_name.toLowerCase().includes(searchTerm)) || 
+        row.user_id.toLowerCase().includes(searchTerm)
+      );
+      renderTable(filtered);
+      renderMap(filtered);
+    }
+
+    function exportCSV() {
+      // Prepare data for export with full names and formatted times
+      const exportData = allData.map(row => ({
+        id: row.id,
+        name: row.full_name,
+        user_id: row.user_id,
+        check_in_time: formatToWIB(row.check_in_time),
+        check_out_time: formatToWIB(row.check_out_time),
+        check_in_latitude: row.check_in_latitude,
+        check_in_longitude: row.check_in_longitude,
+        check_out_latitude: row.check_out_latitude,
+        check_out_longitude: row.check_out_longitude
+      }));
+      
+      const csv = Papa.unparse(exportData);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      saveAs(blob, "attendance_export.csv");
+    }
+
+    // Initialize when page loads
+    document.addEventListener('DOMContentLoaded', function() {
+      fetchData();
+    });
+  </script>
+</body>
+</html>
